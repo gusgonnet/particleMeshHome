@@ -45,8 +45,9 @@
  like this you disable the thermistor
  // #define SENSOR POOL // thermistor
 *******************************************************************************/
-#define SENSOR_POOL // thermistor
+// #define SENSOR_POOL // thermistor
 // #define SENSOR_DS18B20
+#define SENSOR_DHT22
 
 #define MESH_EVENT_DS18B20 "meshTempSensorDs18b20"
 #define MESH_EVENT_POOL "meshPoolSensor"
@@ -55,6 +56,26 @@
 #include <math.h>
 #include "elapsedMillis.h"
 #include "AnalogSmooth.h"
+
+#ifdef SENSOR_DHT22
+#include "PietteTech_DHT.h"
+
+/*******************************************************************************
+ DHT sensor
+*******************************************************************************/
+#define DHTTYPE DHT22                    // Sensor type DHT11/21/22/AM2301/AM2302
+#define DHTPIN 5                         // Digital pin for communications
+#define TEMPERATURE_SAMPLE_INTERVAL 5000 // Sample room temperature every 5 seconds
+void dht_wrapper();                      // must be declared before the lib initialization
+PietteTech_DHT DHT(DHTPIN, DHTTYPE, dht_wrapper);
+bool bDHTstarted; // flag to indicate we started acquisition
+
+// This wrapper is in charge of calling the DHT sensor lib
+void dht_wrapper() { DHT.isrCallback(); }
+
+double humidity;
+
+#endif
 
 SerialLogHandler traceLog(LOG_LEVEL_ALL);
 
@@ -94,6 +115,7 @@ double celsius;
 double fahrenheit;
 AnalogSmooth analogSmoothTempCelsius = AnalogSmooth(20);    // get 20 samples
 AnalogSmooth analogSmoothTempFahrenheit = AnalogSmooth(20); // get 20 samples
+AnalogSmooth analogSmoothHumidity = AnalogSmooth(20);       // get 20 samples
 
 #define BUFFER 623
 #define LITTLE 50
@@ -166,12 +188,21 @@ void getTemp()
   getTempThermistor();
 #endif
 
+#ifdef SENSOR_DHT22
+  getTempDHT22();
+#endif
+
   char tempChar[BUFFER] = "";
   snprintf(tempChar, BUFFER, "current temperature: %.2f °C", celsius);
   Log.info(tempChar);
 
   snprintf(tempChar, BUFFER, "current temperature: %.2f °F", fahrenheit);
   Log.info(tempChar);
+
+#ifdef SENSOR_DHT22
+  snprintf(tempChar, BUFFER, "current humidity: %.2f %%", humidity);
+  Log.info(tempChar);
+#endif
 
   // then let the other devices know the reading
   publishData();
@@ -230,4 +261,46 @@ void getTempThermistor()
 
   //Convert Celsius to Fahrenheit
   fahrenheit = (celsius * 9.0) / 5.0 + 32.0;
+}
+
+/*******************************************************************************
+ * Function Name  : getTempDHT22
+ * Description    : reads the temperature of the DHT22 sensor at every TEMP_SAMPLE_INTERVAL
+ *******************************************************************************/
+void getTempDHT22()
+{
+
+  // start the sample
+  if (!bDHTstarted)
+  {
+    DHT.acquireAndWait(5);
+    bDHTstarted = true;
+  }
+
+  //still acquiring sample? go away and come back later
+  if (DHT.acquiring())
+  {
+    return;
+  }
+
+  //I observed my dht22 measuring below 0 from time to time, so let's discard that sample
+  if (DHT.getCelsius() < 0)
+  {
+    //reset the sample flag so we can take another
+    bDHTstarted = false;
+    return;
+  }
+
+  // now smooth it
+  celsius = analogSmoothTempCelsius.smooth(DHT.getCelsius());
+
+  //Convert Celsius to Fahrenheit
+  fahrenheit = (celsius * 9.0) / 5.0 + 32.0;
+
+  humidity = analogSmoothHumidity.smooth(DHT.getHumidity());
+
+  //reset the sample flag so we can take another sample
+  bDHTstarted = false;
+
+  return;
 }
